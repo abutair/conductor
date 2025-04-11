@@ -71,15 +71,6 @@ trainer.train(
 )
 ```
 
-## Comparison with Existing Frameworks
-
-| Feature | Conductor | TRL | Unsloth | vLLM |
-|---------|-----------|-----|---------|------|
-| Focus | Reward design & interpretation | RL algorithms | Model optimization | Inference speed |
-| Ease of use | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐ |
-| Visualization | ⭐⭐⭐⭐⭐ | ⭐⭐ | ⭐⭐ | ⭐ |
-| Resource efficiency | ⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ |
-| Integration | Hugging Face, PyTorch | Hugging Face | Specialized | Specialized |
 
 ## Roadmap
 
@@ -91,9 +82,6 @@ trainer.train(
 - [ ] Integration with popular model optimization frameworks
 - [ ] Web-based interface for non-technical users
 
-## Contributing
-
-We welcome contributions! See our [contributing guidelines](CONTRIBUTING.md) for more information.
 
 ## License
 
