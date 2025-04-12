@@ -83,6 +83,3 @@ trainer.train(
 - [ ] Web-based interface for non-technical users
 
 
-## License
-
-Conductor is released under the MIT License.
