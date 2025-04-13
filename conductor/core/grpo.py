@@ -91,6 +91,40 @@ class GRPOOptimizer:
             flat_batch_completions = [c for prompt_cs in batch_completions for c in prompt_cs]
 
             flat_batch_refs =None
+            if batch_refs:
+                flat_batch_refs=[]
+                for  ref in batch_refs:
+                    flat_batch_refs.extend([ref]*num_compleations)
+
+            rewards = self.reward_manager.calculate_rewards(
+                flat_batch_completions,flat_batch_refs
+            )
+
+            all_rewards.extend(rewards)
+
+            flat_batch_prompts=[]
+
+            for i, prompt in enumerate(batch_prompts):
+                flat_batch_prompts.extend([prompt]* num_compleations)
+
+            log_probs= self.compute_logprobs(flat_batch_prompts,flat_batch_completions)
+            all_log_probs.append(log_probs)
+
+            all_log_probs = torch.cat(all_log_probs)
+            all_rewards = torch.tensor(all_rewards)
+
+            if len(all_rewards)>1:
+                all_rewards = (all_rewards-all_rewards.mean())/(all_rewards.std()+1e-8)
+
+            # compute grpo loss
+            loss = -(all_log_probs * all_rewards).mean()
+
+            return{
+                "loss":loss,
+                "rewards":all_rewards.tolist(),
+                "mean_reward":all_rewards.mean().item(),
+                "completions":all_completions
+            }
 
     def train(self, dataset, batch_size=8,epochs=1):
 
