@@ -4,8 +4,8 @@ setup(
     name="conductor",
     version="0.1.0",
     description="Orchestrating language models with intuitive reinforcement learning",
-    author="Your Name",
-    author_email="your.email@example.com",
+    author="abutair",
+    author_email="mohammedabutair989@gmail.com",
     packages=find_packages(),
     install_requires=[
         "torch>=1.10.0",
