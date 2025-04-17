@@ -1,142 +1,122 @@
 import torch
 import torch.nn.functional as F
-import numpy as np
+import numpy as np 
 from tqdm import tqdm
+from typing import  Dict, List, Optional, Union, Tuple,Any
+import logging
 
 
-class GRPOOptimizer:
-    """
-    Generalized Reward-Penalized Optimiztion (GRPO) implmeneation.
-    """
-
-    def __init__(self,model, tokenizer, reward_manager, temperature=1.0, kl_weight=0.1)  :
-        self.model = model
-        self.tokenizer = tokenizer
-        self.reward_manager = reward_manager
-        self.temperature = temperature
-        self.kl_weight= kl_weight
+logger = logging.getLogger(__name__)
 
 
+class GRPOOptimzer:
 
-    def compute_logprobs(self, prompts, completions):
-
-        log_probs =[]
-        
-        for prompt, completion in zip(prompts,completions):
-
-            inputs = self.tokenizer(prompt+completion,return_tensors="pt")
-            prompt_tokens = self.tokenizer(prompt, return_types="pt")
+    def __init__(
+            self, 
+            model: Any, 
+            tokenizer: Any, 
+            reward_manager: Any, 
+            temperature: float = 1.0, 
+            kl_weight: float = 0.1,
+            learning_rate: float = 5e-5,
+            gradient_accumulation_steps: int = 1,
+            max_grad_norm: float = 1.0,
+            device: str = None,
+        ):
+            """
+            Initialize the GRPO optimizer.
             
-            prompt_length= prompt_tokens["input_ids"].shape[1]
-
-
-            with torch.no_grad():
-                outpiut = self.model(**inputs)
-                logits = outpiut.logits
-
-            shift_logits = logits[:,prompt_length-1:-1,:]
-            shift_lables = inputs["input_ids"][:,prompt_length:]
-
-
-            log_probs_sequance = F.log_softmax(shift_logits/self.temperature, dim=-1)
-
-            seq_log_prob = 0
-
-            for i in range(len(shift_lables[0])):
-                seq_log_prob += log_probs_sequance[0, i, shift_lables[0,i]].item()
-
-            log_probs.append(seq_log_prob)
-
-            return torch.tensor(log_probs)
-        
-    def optmize(self, prompts, references=None, batch_size= 4, num_compleations=4):
-        all_log_probs = []
-        all_rewards= []
-        all_completions= []
-
-        for prompt_idx in range(0, len(prompts), batch_size):
-            batch_prompts = prompts[prompt_idx:prompt_idx + batch_size]
-            batch_refs = None
-            if references is not None:
-                batch_refs = references[prompt_idx:prompt_idx + batch_size]
-
-
-            # Generate multiple completions per prompt
-            batch_completions=[]
-            for prompt in batch_completions:
-                prompt_comp = []
-
-                for _ in range(num_compleations):
-                    inputs = self.tokenizer(
-                        prompt,
-                        return_tensors='pt',
-                        padding=True,
-                        truncate=True
-                    )
-
-                    outputs = self.model.generate(
-                        inputs["input_ids"],
-                        attention_mask = inputs.get("attenation_mask",None),
-                        max_length=512,
-                        temprature= self.temperature,
-                        top_p=0.9,
-                        do_sample=True,
-                        pad_token_id= self.tokenizer.pad_token_id
-                    )
-
-                    completion = self.tokenizer.decode(outputs[0], skip_sepcial_token=True)
-                    completion.append(completion)
-                    all_completions.append(completion)
+            """
+            self.model = model
+            self.tokenizer = tokenizer
+            self.reward_manager = reward_manager
+            self.temperature = temperature
+            self.kl_weight = kl_weight
+            self.learning_rate = learning_rate
+            self.gradient_accumulation_steps = gradient_accumulation_steps
+            self.max_grad_norm = max_grad_norm
             
-            flat_batch_completions = [c for prompt_cs in batch_completions for c in prompt_cs]
-
-            flat_batch_refs =None
-            if batch_refs:
-                flat_batch_refs=[]
-                for  ref in batch_refs:
-                    flat_batch_refs.extend([ref]*num_compleations)
-
-            rewards = self.reward_manager.calculate_rewards(
-                flat_batch_completions,flat_batch_refs
+            # Set device
+            self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
+            if hasattr(model, 'device'):
+                self.device = model.device
+            
+            # Create optimizer
+            self.optimizer = torch.optim.AdamW(
+                self.model.parameters(),
+                lr=learning_rate,
+                weight_decay=0.01,
+                betas=(0.9, 0.999),
+                eps=1e-8
             )
+            
+            # Create scheduler
+            self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                self.optimizer, 
+                T_max=1000,  
+                eta_min=learning_rate / 10
+            )
+            
+            logger.info(f"Initialized GRPO optimizer on device {self.device}")
 
-            all_rewards.extend(rewards)
+    def compute_logs(self, prompts:List[str], completions:List[str],batch_size:int = 4)->torch.Tensor:
+         all_logs_probs=[]
 
-            flat_batch_prompts=[]
+         for i in range(0,len(prompts),batch_size):
+              batch_prompts= prompts[i:i+batch_size]
+              batch_comppletions = completions[i:i+batch_size]
 
-            for i, prompt in enumerate(batch_prompts):
-                flat_batch_prompts.extend([prompt]* num_compleations)
+              batch_log_probs =[]
 
-            log_probs= self.compute_logprobs(flat_batch_prompts,flat_batch_completions)
-            all_log_probs.append(log_probs)
+              for prompt, completion in zip(batch_prompts, batch_comppletions):
+                   prompt_token = self.tokenizer(prompt, return_tensors='pt').to(self.device)
+                   full_text = prompt + completion
+                   full_tokens = self.tokenizer(full_text,return_tennsors='pt').to(self.device)
+            
+                   prompt_length= prompt_token['input_ids'].shape[1]
 
-            all_log_probs = torch.cat(all_log_probs)
-            all_rewards = torch.tensor(all_rewards)
+                   with torch.no_grad():
+                        outputs = self.model(**full_tokens)
+                        logits= outputs.logits
 
-            if len(all_rewards)>1:
-                all_rewards = (all_rewards-all_rewards.mean())/(all_rewards.std()+1e-8)
+                   completion_logits = logits[:, prompt_length-1:-1,:]
+                   completion_ids = full_tokens["input_ids"][:, prompt_length:]
 
-            # compute grpo loss
-            loss = -(all_log_probs * all_rewards).mean()
+                   # compute log probabilities
 
-            return{
-                "loss":loss,
-                "rewards":all_rewards.tolist(),
-                "mean_reward":all_rewards.mean().item(),
-                "completions":all_completions
-            }
+                   log_probs = F.log_softmax(completion_logits/self.temperature,dim=-1)
 
-    def train(self, dataset, batch_size=8,epochs=1):
+                   token_log_probs = torch.gather(
+                       log_probs,
+                       dim=2,
+                       index=completion_ids.unsqueeze(-1)
+                   ).squeeze(-1)
 
-        return self.grpo.train(
-            dataset=dataset,
-            num_epoches=epochs,
-            batch_size=batch_size,
-            num_completions=self.generation_config.get("num_gernerations",4)
-        )
+                   seq_log_prob = token_log_probs.sum().item()
+                   batch_log_probs.append(seq_log_prob)
+
+              all_log_probs.extend(batch_log_probs)
+
+              return torch.tensor(all_log_probs, device=self.device)
+
+                    
+
+    
+
+    
+
+
+
+                
         
+        
+         
+        
+        
+        
+        
+        
+    
 
 
-
-
-                                      
+        
