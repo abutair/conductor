@@ -95,9 +95,9 @@ class GRPOOptimzer:
                    seq_log_prob = token_log_probs.sum().item()
                    batch_log_probs.append(seq_log_prob)
 
-              all_log_probs.extend(batch_log_probs)
+              all_logs_probs.extend(batch_log_probs)
 
-              return torch.tensor(all_log_probs, device=self.device)
+              return torch.tensor(all_logs_probs, device=self.device)
 
                     
 
