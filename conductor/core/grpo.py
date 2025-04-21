@@ -99,8 +99,57 @@ class GRPOOptimzer:
 
               return torch.tensor(all_logs_probs, device=self.device)
 
-                    
-
+    def _generate_completions(self, prompts:List[str], num_completions:int=4, max_length:int=512)-> Tuple[list[str],list[str]]:
+        
+        all_flat_prompts = []
+        all_completions = []
+        
+        for prompt in tqdm(prompts, desc="Generating completions"):
+            prompt_completions = []
+            
+            for _ in range(num_completions):
+                inputs = self.tokenizer(
+                    prompt, 
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True
+                ).to(self.device)
+                
+                with torch.no_grad():
+                    outputs = self.model.generate(
+                        inputs["input_ids"],
+                        attention_mask=inputs.get("attention_mask", None),
+                        max_length=max_length,
+                        temperature=self.temperature,
+                        top_p=0.9,
+                        do_sample=True,
+                        pad_token_id=self.tokenizer.pad_token_id,
+                        num_return_sequences=1
+                    )
+                
+                completion_ids = outputs[0][inputs["input_ids"].shape[1]:]
+                
+                completion_text = self.tokenizer.decode(
+                    completion_ids, 
+                    skip_special_tokens=True
+                )
+                
+                prompt_completions.append(completion_text)
+                all_flat_prompts.append(prompt)
+                all_completions.append(completion_text)
+            
+        return all_flat_prompts, all_completions
+                            
+    def _calculate_grpo_loss(self, log_probs:torch.Tensor, rewards:torch.Tensor)->torch.Tensor:
+        
+        normalized_rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-8)
+        grpo_loss = -(normalized_rewards*log_probs).mean() # negative becase we want to max rewards
+        
+        return grpo_loss
+    
+    def optmize_step(self, prompts:list[str], references: Optional[List[str]] = None, num_completions: int = 4,max_length: int = 512)->Dict[str, Any]:
+        pass
+        
     
 
     

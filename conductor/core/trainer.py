@@ -27,7 +27,8 @@ class ConductorTrainer:
             "temperature": 1.0,
             "top_p": 0.9
         }
-        self.optimizer = None
+        
+        self.grpp = Grp
     
     def generate_completions(self, prompts, num_completions=None):
         """
