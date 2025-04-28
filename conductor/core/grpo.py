@@ -5,6 +5,9 @@ from tqdm import tqdm
 from typing import  Dict, List, Optional, Union, Tuple,Any
 import logging
 
+from conductor import rewards
+
+
 
 logger = logging.getLogger(__name__)
 
@@ -148,10 +151,155 @@ class GRPOOptimzer:
         return grpo_loss
     
     def optmize_step(self, prompts:list[str], references: Optional[List[str]] = None, num_completions: int = 4,max_length: int = 512)->Dict[str, Any]:
-        pass
+        flat_prompts, completions = self._generate_completions(prompts= prompts,num_completions=num_completions, max_length= max_length)
+        
+        flat_refernces = None
+        
+        if references:
+            flat_refernces=[]
+            for i, ref in enumerate(references):
+                flat_refernces.extend([ref]* num_completions)
+                
+                
+        rewards = self.reward_manager.calculate_rewards(completions=completions,references=flat_refernces)
+        
+        rewards_tensor = torch.tensor(rewards, device=self.device)
+        log_probs = self.compute_logprobs(flat_prompts, completions)
+        loss = self._calculate_grpo_loss(log_probs, rewards_tensor)
+        loss.backward()
+            
+        return {
+            "loss": loss.item(),
+            "rewards": rewards,
+            "mean_reward": sum(rewards) / len(rewards) if rewards else 0,
+            "completions": completions,
+            "log_probs": log_probs.detach().cpu().numpy().tolist()
+        }
         
     
+    def train(self,dataset: Dict[str, List[str]],num_epochs: int = 1,batch_size: int = 4,num_completions: int = 4,
+        max_length: int = 512,eval_steps: Optional[int] = None,save_path: Optional[str] = None,) -> Dict[str, List[float]]:
+        prompts = dataset['prompts']
+        refernces = dataset.get("references")
+        total_steps = (len(prompts)// batch_size+1)* num_epochs
+        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            self.optimizer,
+            T_max=total_steps,
+            eta_min=self.learning_rate/10
+        )
+        
+        metrics = {
+            'epochs':[],
+            'steps':[],
+            'loss':[],
+            'mean_reward':[],
+            'learning_rate':[]
+        }
 
+        step=0 
+        for epoch in range(num_epochs):
+            logger.info(f"epoch{epoch+1}/{num_epochs}")
+
+            #shuffle data 
+            indices = np.random.permuation(len(prompts))
+            shuffled_prompts = [prompts[i] for i in indices]
+            shuffled_refernces = None
+            if refernces:
+                shuffled_refernces= [refernces[i] for i in indices]
+
+            # traning loop
+            epoch_loss =0 
+            epoch_rewards = []
+
+            for batch_idx in tqdm(range(0,len(shuffled_prompts),batch_size),
+                                  desc=f'traning loop {epoch+1}'):
+
+                batch_prompts = shuffled_prompts[batch_idx:batch_idx+batch_size]
+                
+                batch_refs = None
+                if refernces:
+                    batch_refs = shuffled_refernces[batch_idx:batch_idx+batch_size]
+
+
+                self.optimizer.zero_grad()
+
+                batch_metrics={
+                    'loss':0,
+                    'rewards':[],
+                    'mean_reward':0,
+                    'completion':[]
+                }
+ 
+                for i in range(len(batch_prompts)):
+                    prompt = [batch_prompts[i]]
+                    ref = [batch_refs[i]]
+
+                    prompt_metrics=  self.optmize_step(
+                        prompts=prompts,
+                        refernces=ref,
+                        num_completions=num_completions,
+                        max_length=max_length
+                    )
+                    batch_metrics['loss']+=prompt_metrics["loss"]/len(batch_prompts)
+
+                    batch_metrics['rewards'].extend(prompt_metrics['rewards'])
+                    batch_metrics['completion'].extend(prompt_metrics['completions']
+                                                       )    
+
+                    batch_metrics['mean_reward'] = (
+                       sum(batch_metrics['rewards']/len(batch_metrics['rewards']))
+                        if batch_metrics['rewards'] else 0 
+                    )
+
+                    
+    def evelaute(self,eval_dataset: Dict[str, List[str]],num_completions: int = 4,max_length: int = 512)->Dict[str,Any]:
+        prompts = eval_dataset["prompts"]
+        references= eval_dataset.get('references')
+        
+        self.model.eval()
+        
+        flat_prompts, completions = self._generate_completions(
+            prompts=prompts,
+            num_completions=num_completions,
+            max_length=max_length
+        )
+        
+        flat_references = None
+        if references:
+            flat_references =[]
+            
+            for i, ref in enumerate(references):
+                flat_references.extend([ref]*num_completions)
+        
+        rewards = self.reward_manager.calculate_rewards(
+            completions=completions,
+            references=flat_references
+        )    
+        
+        reward_breakdown = self.reward_manager.get_reward_breakdown(
+            completions=completions,
+            references=flat_references
+        )
+
+        
+        grouped_completions = []
+        grouped_rewards = []
+        for i in range(0, len(completions), num_completions):
+            grouped_completions.append(completions[i:i+num_completions])
+            grouped_rewards.append(rewards[i:i+num_completions])
+            
+        mean_reward = sum(rewards) / len(rewards) if rewards else 0
+        
+        self.model.train()
+        
+        return {
+            "mean_reward": mean_reward,
+            "rewards": rewards,
+            "completions": completions,
+            "grouped_completions": grouped_completions,
+            "grouped_rewards": grouped_rewards,
+            "reward_breakdown": reward_breakdown
+        }
     
 
 
