@@ -62,6 +62,48 @@ class GRPOOptimizer:
         logger.info(f'Iniit Grpo optimizer on device {self.device}')
         
     
+    def  compute_logprobs(self, prompts:List[str], completions:List[str], batch_size)->torch.Tensor:
+        all_log_probs = []
         
+
+        for i in range(0,len(prompts),batch_size):
+            
+            batch_prompts =prompts[i:i+batch_size]
+            
+            batch_completions = completions[i:i+batch_size]
+            
+            batch_log_probs= []
+            
+            for prompt, completion in zip(batch_prompts, batch_completions):
+                prompt_tokens = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+            
+                full_text = prompt + completion
+            
+                full_tokens = self.tokenizer(full_text, return_tensors="pt").to(self.device)
+                
+                prompt_length = prompt_tokens["input_ids"].shape[1]
+                
+                with torch.no_grad():
+                    outputs = self.model(** full_tokens)
+                    logits = outputs.logits
+                
+                completion_logits = logits[:, prompt_length-1:-1, :]
+                completion_ids = full_tokens["input_ids"][:, prompt_length:]
+                log_probs = F.log_softmax(completion_logits / self.temperature, dim=-1)
+                token_log_probs = torch.gather(
+                    log_probs, 
+                    dim=2, 
+                    index=completion_ids.unsqueeze(-1)
+                ).squeeze(-1)
+                
+                seq_log_prob = token_log_probs.sum().item()
+                batch_log_probs.append(seq_log_prob)
+                
+            all_log_probs.extend(batch_log_probs)
+            
+        return torch.tensor(all_log_probs, device=self.device)
+                
+                
+            
         
         
