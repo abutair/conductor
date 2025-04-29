@@ -179,77 +179,125 @@ class GRPOOptimzer:
     
     def train(self,dataset: Dict[str, List[str]],num_epochs: int = 1,batch_size: int = 4,num_completions: int = 4,
         max_length: int = 512,eval_steps: Optional[int] = None,save_path: Optional[str] = None,) -> Dict[str, List[float]]:
-        prompts = dataset['prompts']
-        refernces = dataset.get("references")
-        total_steps = (len(prompts)// batch_size+1)* num_epochs
-        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            self.optimizer,
-            T_max=total_steps,
-            eta_min=self.learning_rate/10
-        )
         
-        metrics = {
-            'epochs':[],
-            'steps':[],
-            'loss':[],
-            'mean_reward':[],
-            'learning_rate':[]
-        }
-
-        step=0 
-        for epoch in range(num_epochs):
-            logger.info(f"epoch{epoch+1}/{num_epochs}")
-
-            #shuffle data 
-            indices = np.random.permuation(len(prompts))
-            shuffled_prompts = [prompts[i] for i in indices]
-            shuffled_refernces = None
-            if refernces:
-                shuffled_refernces= [refernces[i] for i in indices]
-
-            # traning loop
-            epoch_loss =0 
-            epoch_rewards = []
-
-            for batch_idx in tqdm(range(0,len(shuffled_prompts),batch_size),
-                                  desc=f'traning loop {epoch+1}'):
-
-                batch_prompts = shuffled_prompts[batch_idx:batch_idx+batch_size]
+            prompts = dataset["prompts"]
+            references = dataset.get("references")
+            
+            # Update scheduler
+            total_steps = (len(prompts) // batch_size + 1) * num_epochs
+            self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                self.optimizer, 
+                T_max=total_steps,
+                eta_min=self.learning_rate / 10
+            )
+            
+            metrics = {
+                "epochs": [],
+                "steps": [],
+                "loss": [],
+                "mean_reward": [],
+                "learning_rate": []
+            }
+            
+            step = 0
+            for epoch in range(num_epochs):
+                logger.info(f"Epoch {epoch+1}/{num_epochs}")
                 
-                batch_refs = None
-                if refernces:
-                    batch_refs = shuffled_refernces[batch_idx:batch_idx+batch_size]
-
-
-                self.optimizer.zero_grad()
-
-                batch_metrics={
-                    'loss':0,
-                    'rewards':[],
-                    'mean_reward':0,
-                    'completion':[]
-                }
- 
-                for i in range(len(batch_prompts)):
-                    prompt = [batch_prompts[i]]
-                    ref = [batch_refs[i]]
-
-                    prompt_metrics=  self.optmize_step(
-                        prompts=prompts,
-                        refernces=ref,
-                        num_completions=num_completions,
-                        max_length=max_length
+                indices = np.random.permutation(len(prompts))
+                shuffled_prompts = [prompts[i] for i in indices]
+                shuffled_refs = None
+                if references:
+                    shuffled_refs = [references[i] for i in indices]
+                
+                epoch_loss = 0
+                epoch_rewards = []
+                
+                for batch_idx in tqdm(range(0, len(shuffled_prompts), batch_size), 
+                                    desc=f"Training epoch {epoch+1}"):
+                    batch_prompts = shuffled_prompts[batch_idx:batch_idx + batch_size]
+                    batch_refs = None
+                    if shuffled_refs:
+                        batch_refs = shuffled_refs[batch_idx:batch_idx + batch_size]
+                    
+                    self.optimizer.zero_grad()
+                    
+                    batch_metrics = {
+                        "loss": 0,
+                        "rewards": [],
+                        "mean_reward": 0,
+                        "completions": []
+                    }
+                    
+                    for i in range(len(batch_prompts)):
+                        prompt = [batch_prompts[i]]
+                        ref = [batch_refs[i]] if batch_refs else None
+                        
+                        prompt_metrics = self.optimize_step(
+                            prompts=prompt,
+                            references=ref,
+                            num_completions=num_completions,
+                            max_length=max_length
+                        )
+                        
+                        batch_metrics["loss"] += prompt_metrics["loss"] / len(batch_prompts)
+                        batch_metrics["rewards"].extend(prompt_metrics["rewards"])
+                        batch_metrics["completions"].extend(prompt_metrics["completions"])
+                    
+                    batch_metrics["mean_reward"] = (
+                        sum(batch_metrics["rewards"]) / len(batch_metrics["rewards"])
+                        if batch_metrics["rewards"] else 0
                     )
-                    batch_metrics['loss']+=prompt_metrics["loss"]/len(batch_prompts)
-
-                    batch_metrics['rewards'].extend(prompt_metrics['rewards'])
-                    batch_metrics['completion'].extend(prompt_metrics['completions']
-                                                       )    
-
-                    batch_metrics['mean_reward'] = (
-                       sum(batch_metrics['rewards']/len(batch_metrics['rewards']))
-                        if batch_metrics['rewards'] else 0 
-                    )
+                    
+                    if (batch_idx // batch_size) % self.gradient_accumulation_steps == 0:
+                        torch.nn.utils.clip_grad_norm_(
+                            self.model.parameters(), 
+                            self.max_grad_norm
+                        )
+                        
+                        self.optimizer.step()
+                        self.scheduler.step()
+                        
+                        step += 1
+                        if eval_steps and step % eval_steps == 0:
+                            metrics["steps"].append(step)
+                            metrics["loss"].append(batch_metrics["loss"])
+                            metrics["mean_reward"].append(batch_metrics["mean_reward"])
+                            metrics["learning_rate"].append(self.scheduler.get_last_lr()[0])
+                    
+                    epoch_loss += batch_metrics["loss"]
+                    epoch_rewards.extend(batch_metrics["rewards"])
+                    
+                    if save_path and step % 100 == 0:
+                        checkpoint_path = f"{save_path}/checkpoint-{step}"
+                        self.model.save_pretrained(checkpoint_path)
+                        self.tokenizer.save_pretrained(checkpoint_path)
+                        logger.info(f"Saved checkpoint to {checkpoint_path}")
+                
+                epoch_loss /= (len(shuffled_prompts) // batch_size + 1)
+                epoch_mean_reward = sum(epoch_rewards) / len(epoch_rewards) if epoch_rewards else 0
+                
+                metrics["epochs"].append(epoch+1)
+                metrics["loss"].append(epoch_loss)
+                metrics["mean_reward"].append(epoch_mean_reward)
+                metrics["learning_rate"].append(self.scheduler.get_last_lr()[0])
+                
+                logger.info(f"Epoch {epoch+1}: Loss = {epoch_loss:.4f}, "
+                        f"Mean Reward = {epoch_mean_reward:.4f}, "
+                        f"LR = {self.scheduler.get_last_lr()[0]:.6f}")
+                
+                if save_path:
+                    epoch_path = f"{save_path}/epoch-{epoch+1}"
+                    self.model.save_pretrained(epoch_path)
+                    self.tokenizer.save_pretrained(epoch_path)
+                    logger.info(f"Saved model after epoch {epoch+1} to {epoch_path}")
+            
+            if save_path:
+                final_path = f"{save_path}/final"
+                self.model.save_pretrained(final_path)
+                self.tokenizer.save_pretrained(final_path)
+                logger.info(f"Saved final model to {final_path}")
+            
+            return metrics
 
                     
     def evelaute(self,eval_dataset: Dict[str, List[str]],num_completions: int = 4,max_length: int = 512)->Dict[str,Any]:
